@@ -1,3 +1,6 @@
+this code develop for backtesting not for online trading.
+you should try to create online traiding code if you want to use in real market
+
 import ccxt
 import pandas as pd
 import numpy as np
@@ -7,11 +10,7 @@ import matplotlib.pyplot as plt
 
 
 def fetch_ohlcv(symbol="ETH/USDT", timeframe="4h", since=None, limit=1500):
-    exchange = ccxt.kucoin()
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
-    return df
+    ....
 
 since = int(datetime.datetime(2025, 1, 1).timestamp() * 1000)
 df = fetch_ohlcv("ETH/USDT", "4h", since=since, limit=2000)
@@ -202,3 +201,12 @@ plt.plot(df["time"], equity_curve, label="Equity Curve", color="purple")
 plt.title("Equity Curve")
 plt.legend()
 plt.show()
+====== Backtest Report ======
+Initial Balance: 10000
+Final Balance: 14421.94
+Total Trades: 48
+Win Rate: 72.92%
+Average PnL per Trade: 92.12
+Profit Factor: 5.72
+Average Trade Duration: 2 days 23:15:00
+Max Drawdown: 496.00
