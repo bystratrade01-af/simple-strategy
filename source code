@@ -1,0 +1,204 @@
+import ccxt
+import pandas as pd
+import numpy as np
+import ta
+import datetime
+import matplotlib.pyplot as plt
+
+
+def fetch_ohlcv(symbol="ETH/USDT", timeframe="4h", since=None, limit=1500):
+    exchange = ccxt.kucoin()
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    return df
+
+since = int(datetime.datetime(2025, 1, 1).timestamp() * 1000)
+df = fetch_ohlcv("ETH/USDT", "4h", since=since, limit=2000)
+
+
+df["ema20"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
+df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
+df["ema200"] = ta.trend.EMAIndicator(df["close"], window=200).ema_indicator()
+
+macd = ta.trend.MACD(df["close"], window_slow=26, window_fast=12, window_sign=9)
+df["macd_line"] = macd.macd()
+df["macd_signal"] = macd.macd_signal()
+
+df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+df["obv"] = ta.volume.OnBalanceVolumeIndicator(df["close"], df["volume"]).on_balance_volume()
+
+# Ichimoku
+df["tenkan"] = (df["high"].rolling(9).max() + df["low"].rolling(9).min()) / 2
+df["kijun"] = (df["high"].rolling(26).max() + df["low"].rolling(26).min()) / 2
+
+
+df["long_signal"] = (
+    (df["close"] > df["ema200"]) &
+    (df["ema20"] > df["ema50"]) &
+    (df["macd_line"] > df["macd_signal"]) &
+    (df["macd_line"] > 0) &
+    (df["rsi"] > 50) & (df["rsi"] < 70) &
+    (df["tenkan"] > df["kijun"]) &
+    (df["obv"].diff(3) > 0)
+)
+
+df["short_signal"] = (
+    (df["close"] < df["ema200"]) &
+    (df["ema20"] < df["ema50"]) &
+    (df["macd_line"] < df["macd_signal"]) &
+    (df["macd_line"] < 0) &
+    (df["rsi"] < 50) & (df["rsi"] > 30) &
+    (df["tenkan"] < df["kijun"]) &
+    (df["obv"].diff(3) < 0)
+)
+
+
+initial_balance = 10000
+balance = initial_balance
+risk_percent = 0.01   # 1% ریسک در هر معامله
+position = None
+trades = []
+equity_curve = []
+
+atr_mult = 1.5
+
+for i in range(len(df)):
+    row = df.iloc[i]
+    equity_curve.append(balance)
+
+    # ورود به معامله
+    if position is None:
+        if row["long_signal"]:
+            sl_price = row["close"] - row["atr"] * atr_mult
+            risk_dollar = balance * risk_percent
+            risk_per_unit = row["close"] - sl_price
+            position_size = risk_dollar / risk_per_unit if risk_per_unit > 0 else 0
+
+            position = {
+                "type": "long",
+                "entry": row["close"],
+                "entry_time": row["time"],
+                "sl": sl_price,
+                "tp1": row["close"] + row["atr"] * atr_mult,
+                "tp2": row["close"] + row["atr"] * 2 * atr_mult,
+                "size": position_size,
+                "closed": 0.0
+            }
+
+        elif row["short_signal"]:
+            sl_price = row["close"] + row["atr"] * atr_mult
+            risk_dollar = balance * risk_percent
+            risk_per_unit = sl_price - row["close"]
+            position_size = risk_dollar / risk_per_unit if risk_per_unit > 0 else 0
+
+            position = {
+                "type": "short",
+                "entry": row["close"],
+                "entry_time": row["time"],
+                "sl": sl_price,
+                "tp1": row["close"] - row["atr"] * atr_mult,
+                "tp2": row["close"] - row["atr"] * 2 * atr_mult,
+                "size": position_size,
+                "closed": 0.0
+            }
+
+    
+    else:
+        
+        if position["type"] == "long":
+            if row["low"] <= position["sl"]:
+                pnl = (position["sl"] - position["entry"]) * position["size"]
+                balance += pnl
+                trades.append({"type":"long","entry":position["entry"],"exit":position["sl"],
+                               "pnl":pnl,"entry_time":position["entry_time"],"exit_time":row["time"]})
+                position = None
+            else:
+                if position["closed"] < 0.5 and row["high"] >= position["tp1"]:
+                    pnl = (position["tp1"] - position["entry"]) * position["size"] * 0.5
+                    balance += pnl
+                    position["closed"] += 0.5
+                    position["sl"] = position["entry"]  # break-even
+                    trades.append({"type":"long","entry":position["entry"],"exit":position["tp1"],
+                                   "pnl":pnl,"entry_time":position["entry_time"],"exit_time":row["time"]})
+                if position["closed"] < 0.8 and row["high"] >= position["tp2"]:
+                    pnl = (position["tp2"] - position["entry"]) * position["size"] * 0.3
+                    balance += pnl
+                    position["closed"] += 0.3
+                    trades.append({"type":"long","entry":position["entry"],"exit":position["tp2"],
+                                   "pnl":pnl,"entry_time":position["entry_time"],"exit_time":row["time"]})
+                if position["closed"] >= 0.8:
+                    new_sl = row["close"] - row["atr"] * atr_mult
+                    if new_sl > position["sl"]:
+                        position["sl"] = new_sl
+
+        
+        elif position["type"] == "short":
+            if row["high"] >= position["sl"]:
+                pnl = (position["entry"] - position["sl"]) * position["size"]
+                balance += pnl
+                trades.append({"type":"short","entry":position["entry"],"exit":position["sl"],
+                               "pnl":pnl,"entry_time":position["entry_time"],"exit_time":row["time"]})
+                position = None
+            else:
+                if position["closed"] < 0.5 and row["low"] <= position["tp1"]:
+                    pnl = (position["entry"] - position["tp1"]) * position["size"] * 0.5
+                    balance += pnl
+                    position["closed"] += 0.5
+                    position["sl"] = position["entry"]
+                    trades.append({"type":"short","entry":position["entry"],"exit":position["tp1"],
+                                   "pnl":pnl,"entry_time":position["entry_time"],"exit_time":row["time"]})
+                if position["closed"] < 0.8 and row["low"] <= position["tp2"]:
+                    pnl = (position["entry"] - position["tp2"]) * position["size"] * 0.3
+                    balance += pnl
+                    position["closed"] += 0.3
+                    trades.append({"type":"short","entry":position["entry"],"exit":position["tp2"],
+                                   "pnl":pnl,"entry_time":position["entry_time"],"exit_time":row["time"]})
+                if position["closed"] >= 0.8:
+                    new_sl = row["close"] + row["atr"] * atr_mult
+                    if new_sl < position["sl"]:
+                        position["sl"] = new_sl
+
+
+trades_df = pd.DataFrame(trades)
+equity_curve = pd.Series(equity_curve, index=df.index)
+
+if not trades_df.empty:
+    total_trades = len(trades_df)
+    wins = trades_df[trades_df["pnl"]>0]
+    losses = trades_df[trades_df["pnl"]<=0]
+    win_rate = len(wins)/total_trades*100
+    avg_pnl = trades_df["pnl"].mean()
+    profit_factor = wins["pnl"].sum()/abs(losses["pnl"].sum()) if not losses.empty else np.inf
+    avg_duration = (trades_df["exit_time"] - trades_df["entry_time"]).mean()
+    max_drawdown = (equity_curve.cummax() - equity_curve).max()
+
+    print("====== Backtest Report ======")
+    print(f"Initial Balance: {initial_balance}")
+    print(f"Final Balance: {balance:.2f}")
+    print(f"Total Trades: {total_trades}")
+    print(f"Win Rate: {win_rate:.2f}%")
+    print(f"Average PnL per Trade: {avg_pnl:.2f}")
+    print(f"Profit Factor: {profit_factor:.2f}")
+    print(f"Average Trade Duration: {avg_duration}")
+    print(f"Max Drawdown: {max_drawdown:.2f}")
+else:
+    print("no trade")
+
+
+plt.figure(figsize=(12,6))
+plt.plot(df["time"], df["close"], label="Close Price", color="black")
+for _, t in trades_df.iterrows():
+    plt.scatter(t["entry_time"], t["entry"], marker="^" if t["type"]=="long" else "v",
+                color="green" if t["type"]=="long" else "red", s=100)
+    plt.scatter(t["exit_time"], t["exit"], marker="o", color="blue", s=60)
+plt.title("Trade Visualization")
+plt.legend()
+plt.show()
+
+plt.figure(figsize=(12,5))
+plt.plot(df["time"], equity_curve, label="Equity Curve", color="purple")
+plt.title("Equity Curve")
+plt.legend()
+plt.show()
