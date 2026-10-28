@@ -1,0 +1,43 @@
+name: ICT research software checks
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'monitor_worker.py'
+      - 'ict_team_setup/team_gate.py'
+      - 'ict_team_setup/tests/**'
+      - '.github/workflows/ict-research-checks.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ict-research-software-checks
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Run bounded software checks once
+        run: python -B monitor_worker.py --once
+      - name: Record scope and outcome
+        if: always()
+        env:
+          CHECK_OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "## ICT research software monitor"
+            echo "Job result: $CHECK_OUTCOME"
+            echo "Scope: synthetic acceptance-gate regression tests."
+            echo "Research/trading acceptance: BLOCKED."
+            echo "Live orders: disabled. Five LLM roles and live-market analysis are not executed."
+            echo "Scheduled every six hours; GitHub may delay or skip scheduled runs."
+          } >> "$GITHUB_STEP_SUMMARY"
